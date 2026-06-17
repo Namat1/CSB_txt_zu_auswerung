@@ -28,6 +28,7 @@ st.set_page_config(
 st.title("🚚 CSB Ladeplan Abgleich")
 st.success("App ist gestartet.")
 st.caption(
+st.info("CSB mit 103/F8 die ganzen Wochentage von 1001-1886 bis 6001-6886 generieren und als TXT exportieren, dann mit Quelldatei abgleichen.")
     "TXT-Ladeplan und Excel-Vorgabe hochladen. "
     "Die Excel ist maßgeblich und zeigt, welchen Stand CSB annehmen muss."
 )
