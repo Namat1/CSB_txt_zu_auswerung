@@ -1,23 +1,16 @@
 # CSB_txt_zu_auswerung.py
-# Streamlit-App: CSB Tour-/Ladeplan TXT sauber auslesen
-# Ausgabe: Touren + Kunden mit CSB-Nummer, Name, Straße, Postleitzahl und Ort
+# Reine Streamlit-App ohne argparse, ohne FastAPI, ohne Pflichtargumente.
 
 from __future__ import annotations
 
 import io
 import re
-import sys
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 
-APP_TITLE = "CSB Ladeplan TXT auslesen"
-
-
 def decode_bytes(data: bytes) -> str:
-    """TXT-Datei robust dekodieren. CSB-Exporte enthalten oft Windows-1252-Umlaute."""
     for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
             return data.decode(enc)
@@ -27,7 +20,6 @@ def decode_bytes(data: bytes) -> str:
 
 
 def clean_text(value: str) -> str:
-    """Text bereinigen, ohne echte Umlaute zu zerstören."""
     if value is None:
         return ""
     value = value.replace("\x0c", " ")
@@ -38,28 +30,22 @@ def clean_text(value: str) -> str:
 
 
 def extract_customer_line(line: str):
-    """
-    Liest eine Kundenzeile aus dem alten Festbreiten-Ausdruck.
-
-    Unterstützt beide Varianten:
-    - ohne Ladepositionsdruck:        10502 Kunde Straße PLZ Ort ...
-    - mit Ladepositionsdruck:    1    13822 Kunde Straße PLZ Ort ...
-    """
     raw = line.rstrip("\r\n").replace("\xa0", " ")
 
-    # Kundenzeilen haben am Ende die Punkt-Spalten.
+    # Kundenzeilen enden im Ausdruck mit mehreren Punkt-Spalten.
     if not re.search(r"(?:\.\s*){2,}\s*$", raw):
         return None
 
-    # Variante mit optionaler Ladepositionsnummer vor der CSB-Nummer.
-    m_start = re.match(r"^\s{3,}(?:(\d{1,3})\s+)?(\d{3,6})\s+", raw)
-    if not m_start:
+    # Unterstützt:
+    # 10502 Kunde ...
+    # 1 13822 Kunde ...
+    match_start = re.match(r"^\s{3,}(?:(\d{1,3})\s+)?(\d{3,6})\s+", raw)
+    if not match_start:
         return None
 
-    ladefolge_gedruckt = m_start.group(1)
-    csb = m_start.group(2)
+    ladefolge_gedruckt = match_start.group(1)
+    csb = match_start.group(2)
 
-    # Letzte fünfstellige Nummer vor dem Ort ist die Postleitzahl.
     plz_matches = list(re.finditer(r"\b\d{5}\b", raw))
     if not plz_matches:
         return None
@@ -67,15 +53,13 @@ def extract_customer_line(line: str):
     plz_match = plz_matches[-1]
     plz = plz_match.group(0)
 
-    # Ort steht nach der Postleitzahl bis vor Punkt-Spalten.
-    right = raw[plz_match.end():]
-    right = re.sub(r"(?:\s+\.){2,}.*$", "", right)
-    ort = clean_text(right)
+    ort_raw = raw[plz_match.end():]
+    ort_raw = re.sub(r"(?:\s+\.){2,}.*$", "", ort_raw)
+    ort = clean_text(ort_raw)
 
-    # Bereich zwischen CSB und PLZ enthält Name + Straße.
-    mid = raw[m_start.end():plz_match.start()].rstrip()
+    mid = raw[match_start.end():plz_match.start()].rstrip()
 
-    # Im Ausdruck ist der Kundenname 21 Zeichen breit, danach beginnt Straße.
+    # CSB-Festbreite: Name 21 Zeichen, danach Straße.
     kunde = clean_text(mid[:21])
     strasse = clean_text(mid[21:])
 
@@ -84,11 +68,11 @@ def extract_customer_line(line: str):
 
 def parse_ladeplan(text: str):
     current_tour = ""
-    current_tour_text = ""
     current_wochentag = ""
+    current_tour_text = ""
     position = 0
 
-    rows = []
+    kunden_rows = []
     tour_meta = {}
 
     tour_re = re.compile(r"^\s*Tour\s+(\d{3,6})\b(.*?)(?:LKW:|$)", re.IGNORECASE)
@@ -135,13 +119,11 @@ def parse_ladeplan(text: str):
             position += 1
             ladefolge_gedruckt, csb, kunde, strasse, plz, ort = customer
 
-            ladereihenfolge = int(ladefolge_gedruckt) if ladefolge_gedruckt else position
-
-            rows.append(
+            kunden_rows.append(
                 {
                     "Tour": current_tour,
                     "Wochentag": current_wochentag,
-                    "Ladereihenfolge": ladereihenfolge,
+                    "Ladereihenfolge": int(ladefolge_gedruckt) if ladefolge_gedruckt else position,
                     "Position_im_Tourblock": position,
                     "CSB": csb,
                     "Kunde": kunde,
@@ -149,20 +131,19 @@ def parse_ladeplan(text: str):
                     "PLZ": plz,
                     "Ort": ort,
                     "Tour_Text": current_tour_text,
-                    "Originalzeile": clean_text(line),
                 }
             )
 
-    kunden_df = pd.DataFrame(rows)
+    kunden_df = pd.DataFrame(kunden_rows)
 
     if kunden_df.empty:
-        empty_touren = pd.DataFrame(
+        touren_df = pd.DataFrame(
             columns=["Tour", "Wochentag", "Tour_Text", "Erwartete_Kunden", "Erkannte_Kunden", "Differenz", "Status"]
         )
-        empty_pruefung = pd.DataFrame(
+        pruefung_df = pd.DataFrame(
             columns=["Tour", "Wochentag", "Erwartete_Kunden", "Erkannte_Kunden", "Differenz", "Status"]
         )
-        return kunden_df, empty_touren, empty_pruefung
+        return kunden_df, touren_df, pruefung_df
 
     erkannte = (
         kunden_df.groupby("Tour", as_index=False)
@@ -175,14 +156,14 @@ def parse_ladeplan(text: str):
     touren_df["Erkannte_Kunden"] = pd.to_numeric(touren_df["Erkannte_Kunden"], errors="coerce").fillna(0).astype(int)
     touren_df["Differenz"] = touren_df["Erkannte_Kunden"] - touren_df["Erwartete_Kunden"]
 
-    def make_status(row):
+    def status(row):
         if pd.isna(row["Erwartete_Kunden"]):
             return "Keine Sollzahl gefunden"
         if row["Differenz"] == 0:
             return "OK"
         return "Abweichung"
 
-    touren_df["Status"] = touren_df.apply(make_status, axis=1)
+    touren_df["Status"] = touren_df.apply(status, axis=1)
 
     kunden_df = kunden_df.sort_values(["Tour", "Position_im_Tourblock"], kind="stable").reset_index(drop=True)
     touren_df = touren_df.sort_values("Tour", kind="stable").reset_index(drop=True)
@@ -191,8 +172,9 @@ def parse_ladeplan(text: str):
     return kunden_df, touren_df, pruefung_df
 
 
-def make_excel(kunden_df, touren_df, pruefung_df) -> bytes:
+def make_excel(kunden_df: pd.DataFrame, touren_df: pd.DataFrame, pruefung_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         kunden_df.to_excel(writer, sheet_name="Kunden", index=False)
         touren_df.to_excel(writer, sheet_name="Touren", index=False)
@@ -201,28 +183,25 @@ def make_excel(kunden_df, touren_df, pruefung_df) -> bytes:
         for ws in writer.book.worksheets:
             ws.freeze_panes = "A2"
             for col in ws.columns:
-                max_len = 0
                 letter = col[0].column_letter
-                for cell in col:
-                    value = "" if cell.value is None else str(cell.value)
-                    max_len = max(max_len, len(value))
+                max_len = max(len("" if cell.value is None else str(cell.value)) for cell in col)
                 ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 55)
 
     return output.getvalue()
 
 
-def run_streamlit_app() -> None:
-    st.set_page_config(page_title=APP_TITLE, page_icon="🚚", layout="wide")
+st.set_page_config(page_title="CSB Ladeplan TXT auslesen", page_icon="🚚", layout="wide")
 
-    st.title("🚚 CSB Ladeplan TXT auslesen")
-    st.caption("TXT hochladen → Touren und Kunden mit CSB-Nummer sauber als Excel oder CSV exportieren.")
+st.title("🚚 CSB Ladeplan TXT auslesen")
+st.caption("TXT hochladen → Touren und Kunden mit CSB-Nummer sauber als Excel oder CSV exportieren.")
 
-    uploaded = st.file_uploader("Ladeplan als TXT hochladen", type=["txt"])
+uploaded = st.file_uploader("Ladeplan als TXT hochladen", type=["txt"])
 
-    if uploaded is None:
-        st.info("Bitte eine TXT-Datei hochladen.")
-        st.stop()
+if uploaded is None:
+    st.info("Bitte eine TXT-Datei hochladen.")
+    st.stop()
 
+try:
     text = decode_bytes(uploaded.getvalue())
     kunden_df, touren_df, pruefung_df = parse_ladeplan(text)
 
@@ -232,15 +211,15 @@ def run_streamlit_app() -> None:
             st.text(text[:5000])
         st.stop()
 
-    fehler = pruefung_df[pruefung_df["Status"] != "OK"]
+    fehler_df = pruefung_df[pruefung_df["Status"] != "OK"]
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Touren", f"{touren_df['Tour'].nunique():,}".replace(",", "."))
-    col2.metric("Kundenzeilen", f"{len(kunden_df):,}".replace(",", "."))
-    col3.metric("Prüfabweichungen", f"{len(fehler):,}".replace(",", "."))
+    col2.metric("Kunden", f"{len(kunden_df):,}".replace(",", "."))
+    col3.metric("Prüfabweichungen", f"{len(fehler_df):,}".replace(",", "."))
     col4.metric("Datei", uploaded.name)
 
-    if len(fehler) == 0:
+    if len(fehler_df) == 0:
         st.success("Alle Touren passen zur angegebenen Anzahl Kunden.")
     else:
         st.warning("Es gibt Touren mit abweichender Kundenanzahl. Bitte im Reiter Prüfung ansehen.")
@@ -275,26 +254,5 @@ def run_streamlit_app() -> None:
     with tab3:
         st.dataframe(pruefung_df, use_container_width=True, hide_index=True)
 
-
-def run_cli(txt_path: Path, out_dir: Path) -> None:
-    text = decode_bytes(txt_path.read_bytes())
-    kunden_df, touren_df, pruefung_df = parse_ladeplan(text)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    kunden_df.to_csv(out_dir / "Ladeplan_Kunden.csv", index=False, sep=";", encoding="utf-8-sig")
-    touren_df.to_csv(out_dir / "Ladeplan_Touren.csv", index=False, sep=";", encoding="utf-8-sig")
-    pruefung_df.to_csv(out_dir / "Ladeplan_Pruefung.csv", index=False, sep=";", encoding="utf-8-sig")
-    (out_dir / "Ladeplan_Auswertung.xlsx").write_bytes(make_excel(kunden_df, touren_df, pruefung_df))
-
-    print(f"Fertig: {touren_df['Tour'].nunique()} Touren, {len(kunden_df)} Kunden")
-    print(f"Ausgabeordner: {out_dir.resolve()}")
-
-
-# Streamlit Cloud startet ohne Startargument.
-# Kommandozeile funktioniert trotzdem: python CSB_txt_zu_auswerung.py Ladeplan.txt
-if len(sys.argv) >= 2 and Path(sys.argv[1]).is_file():
-    output_dir = Path(sys.argv[2]) if len(sys.argv) >= 3 else Path("ausgabe")
-    run_cli(Path(sys.argv[1]), output_dir)
-else:
-    run_streamlit_app()
+except Exception as error:
+    st.exception(error)
