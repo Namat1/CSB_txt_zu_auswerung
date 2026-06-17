@@ -1,6 +1,8 @@
 # CSB_txt_zu_auswerung.py
-# Robuste reine Streamlit-App.
-# Wichtig: Diese Datei muss in GitHub genau CSB_txt_zu_auswerung.py heißen.
+# Reine Streamlit-App ohne argparse, ohne FastAPI, ohne Pflichtargumente.
+# Wichtig: Es wird KEINE Ladereihenfolge erfunden.
+# Wenn im TXT vorne in der Spalte La. ein Wert steht, landet er in La_aus_TXT.
+# Wenn dort nichts steht, bleibt La_aus_TXT leer.
 
 from __future__ import annotations
 
@@ -18,8 +20,8 @@ st.set_page_config(
 )
 
 st.title("🚚 CSB Ladeplan TXT auslesen")
-st.success("App ist gestartet. Bitte TXT-Datei hochladen.")
-st.caption("Wenn du diese Meldung siehst, läuft Streamlit korrekt.")
+st.caption("TXT hochladen → Touren und Kunden mit CSB-Nummer sauber als Excel oder CSV exportieren.")
+st.info("Hinweis: Es wird keine Ladereihenfolge erfunden. Leere La.-Spalten bleiben leer.")
 
 
 def decode_bytes(data: bytes) -> str:
@@ -42,18 +44,45 @@ def clean_text(value: str) -> str:
 
 
 def extract_customer_line(line: str):
+    """
+    Liest eine Kundenzeile aus dem CSB-Ladeplan.
+
+    Zwei Varianten werden erkannt:
+    1. Ohne La.-Wert:
+       10502 Kunde Straße PLZ Ort ...
+       -> La_aus_TXT bleibt leer.
+
+    2. Mit La.-Wert vorne:
+       1    13822 Kunde Straße PLZ Ort ...
+       -> La_aus_TXT = 1.
+
+    Wichtig: Wenn kein La.-Wert vorhanden ist, wird NICHT automatisch 1,2,3 gezählt.
+    """
     raw = line.rstrip("\r\n").replace("\xa0", " ")
 
+    # Kundenzeilen enden im Ausdruck mit mehreren Punkt-Spalten.
     if not re.search(r"(?:\.\s*){2,}\s*$", raw):
         return None
 
-    match_start = re.match(r"^\s{3,}(?:(\d{1,3})\s+)?(\d{3,6})\s+", raw)
-    if not match_start:
-        return None
+    # Erst versuchen: La.-Wert plus CSB.
+    # Beispiel: "     1    13822 Peter Saur..."
+    match_with_la = re.match(r"^\s{3,}(\d{1,3})\s{2,}(\d{3,6})\s+", raw)
 
-    ladefolge_gedruckt = match_start.group(1)
-    csb = match_start.group(2)
+    if match_with_la:
+        la_aus_txt = match_with_la.group(1)
+        csb = match_with_la.group(2)
+        start_end = match_with_la.end()
+    else:
+        # Ohne La.-Wert: erste Nummer ist CSB.
+        # Beispiel: "          10502 V.BERGMANN..."
+        match_without_la = re.match(r"^\s{3,}(\d{3,6})\s+", raw)
+        if not match_without_la:
+            return None
+        la_aus_txt = ""
+        csb = match_without_la.group(1)
+        start_end = match_without_la.end()
 
+    # Letzte fünfstellige Nummer vor dem Ort ist die Postleitzahl.
     plz_matches = list(re.finditer(r"\b\d{5}\b", raw))
     if not plz_matches:
         return None
@@ -65,16 +94,17 @@ def extract_customer_line(line: str):
     ort_raw = re.sub(r"(?:\s+\.){2,}.*$", "", ort_raw)
     ort = clean_text(ort_raw)
 
-    mid = raw[match_start.end():plz_match.start()].rstrip()
+    # Bereich zwischen CSB und PLZ enthält Name + Straße.
+    mid = raw[start_end:plz_match.start()].rstrip()
 
+    # CSB-Festbreite: Kundenname etwa 21 Zeichen, danach Straße.
     kunde = clean_text(mid[:21])
     strasse = clean_text(mid[21:])
 
-    return ladefolge_gedruckt, csb, kunde, strasse, plz, ort
+    return la_aus_txt, csb, kunde, strasse, plz, ort
 
 
 def parse_ladeplan(text: str):
-    # Pandas erst hier laden, damit die App-Oberfläche sofort erscheint.
     import pandas as pd
 
     current_tour = ""
@@ -127,19 +157,19 @@ def parse_ladeplan(text: str):
         customer = extract_customer_line(line)
         if customer and current_tour:
             position += 1
-            ladefolge_gedruckt, csb, kunde, strasse, plz, ort = customer
+            la_aus_txt, csb, kunde, strasse, plz, ort = customer
 
             kunden_rows.append(
                 {
                     "Tour": current_tour,
                     "Wochentag": current_wochentag,
-                    "Ladereihenfolge": int(ladefolge_gedruckt) if ladefolge_gedruckt else position,
-                    "Position_im_Tourblock": position,
                     "CSB": csb,
                     "Kunde": kunde,
                     "Strasse": strasse,
                     "PLZ": plz,
                     "Ort": ort,
+                    "La_aus_TXT": la_aus_txt,
+                    "Position_im_Tourblock": position,
                     "Tour_Text": current_tour_text,
                 }
             )
@@ -219,11 +249,13 @@ try:
         st.stop()
 
     fehler_df = pruefung_df[pruefung_df["Status"] != "OK"]
+    la_gefunden = kunden_df["La_aus_TXT"].astype(str).str.strip().ne("").sum()
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Touren", f"{touren_df['Tour'].nunique():,}".replace(",", "."))
     col2.metric("Kunden", f"{len(kunden_df):,}".replace(",", "."))
-    col3.metric("Prüfabweichungen", f"{len(fehler_df):,}".replace(",", "."))
+    col3.metric("La.-Werte aus TXT", f"{la_gefunden:,}".replace(",", "."))
+    col4.metric("Prüfabweichungen", f"{len(fehler_df):,}".replace(",", "."))
 
     if len(fehler_df) == 0:
         st.success("Alle Touren passen zur angegebenen Anzahl Kunden.")
