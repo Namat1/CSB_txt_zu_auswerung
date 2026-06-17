@@ -1,6 +1,4 @@
-from pathlib import Path
-
-app_code = r'''# CSB_txt_zu_auswerung.py
+# CSB_txt_zu_auswerung.py
 # Streamlit-App zum Auslesen eines CSB Tour-/Ladeplans aus einer TXT-Datei.
 # Gibt Touren und Kunden mit CSB-Nummer als Excel und CSV aus.
 
@@ -34,7 +32,7 @@ def clean_text(value: str) -> str:
     if value is None:
         return ""
     value = value.replace("\x0c", " ")
-    value = value.replace("�", "ü")  # häufiges Ersatzzeichen bei falsch kodierten Umlauten
+    value = value.replace(" ", "ü")  # häufiges Ersatzzeichen bei falsch kodierten Umlauten
     value = re.sub(r"\s+", " ", value)
     return value.strip(" \t\r\n.;")
 
@@ -338,25 +336,3 @@ if len(sys.argv) >= 2 and Path(sys.argv[1]).is_file():
     run_cli(Path(sys.argv[1]), output_dir)
 else:
     run_streamlit_app()
-'''
-
-requirements = """streamlit
-pandas
-openpyxl
-"""
-
-Path("/mnt/data/CSB_txt_zu_auswerung.py").write_text(app_code, encoding="utf-8")
-Path("/mnt/data/requirements.txt").write_text(requirements, encoding="utf-8")
-
-# Kurztest mit der vorhandenen Beispieldatei, falls vorhanden.
-test_path = Path("/mnt/data/Ladeplan(1).txt")
-if test_path.exists():
-    ns = {}
-    # nur Parser-Funktionen grob testen, indem wir Code ohne den unteren Startblock ausführen
-    safe_code = app_code.split("# Wichtig:")[0]
-    exec(safe_code, ns)
-    text = ns["decode_bytes"](test_path.read_bytes())
-    kunden_df, touren_df, pruefung_df = ns["parse_ladeplan"](text)
-    print("Test:", len(touren_df), "Touren,", len(kunden_df), "Kunden,", (pruefung_df["Status"] != "OK").sum(), "Abweichungen")
-else:
-    print("Dateien erstellt.")
