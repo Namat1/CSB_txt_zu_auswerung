@@ -1,13 +1,25 @@
 # CSB_txt_zu_auswerung.py
-# Reine Streamlit-App ohne argparse, ohne FastAPI, ohne Pflichtargumente.
+# Robuste reine Streamlit-App.
+# Wichtig: Diese Datei muss in GitHub genau CSB_txt_zu_auswerung.py heißen.
 
 from __future__ import annotations
 
 import io
 import re
+import traceback
 
-import pandas as pd
 import streamlit as st
+
+
+st.set_page_config(
+    page_title="CSB Ladeplan TXT auslesen",
+    page_icon="🚚",
+    layout="wide",
+)
+
+st.title("🚚 CSB Ladeplan TXT auslesen")
+st.success("App ist gestartet. Bitte TXT-Datei hochladen.")
+st.caption("Wenn du diese Meldung siehst, läuft Streamlit korrekt.")
 
 
 def decode_bytes(data: bytes) -> str:
@@ -32,13 +44,9 @@ def clean_text(value: str) -> str:
 def extract_customer_line(line: str):
     raw = line.rstrip("\r\n").replace("\xa0", " ")
 
-    # Kundenzeilen enden im Ausdruck mit mehreren Punkt-Spalten.
     if not re.search(r"(?:\.\s*){2,}\s*$", raw):
         return None
 
-    # Unterstützt:
-    # 10502 Kunde ...
-    # 1 13822 Kunde ...
     match_start = re.match(r"^\s{3,}(?:(\d{1,3})\s+)?(\d{3,6})\s+", raw)
     if not match_start:
         return None
@@ -59,7 +67,6 @@ def extract_customer_line(line: str):
 
     mid = raw[match_start.end():plz_match.start()].rstrip()
 
-    # CSB-Festbreite: Name 21 Zeichen, danach Straße.
     kunde = clean_text(mid[:21])
     strasse = clean_text(mid[21:])
 
@@ -67,6 +74,9 @@ def extract_customer_line(line: str):
 
 
 def parse_ladeplan(text: str):
+    # Pandas erst hier laden, damit die App-Oberfläche sofort erscheint.
+    import pandas as pd
+
     current_tour = ""
     current_wochentag = ""
     current_tour_text = ""
@@ -172,7 +182,9 @@ def parse_ladeplan(text: str):
     return kunden_df, touren_df, pruefung_df
 
 
-def make_excel(kunden_df: pd.DataFrame, touren_df: pd.DataFrame, pruefung_df: pd.DataFrame) -> bytes:
+def make_excel(kunden_df, touren_df, pruefung_df) -> bytes:
+    import pandas as pd
+
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -190,20 +202,15 @@ def make_excel(kunden_df: pd.DataFrame, touren_df: pd.DataFrame, pruefung_df: pd
     return output.getvalue()
 
 
-st.set_page_config(page_title="CSB Ladeplan TXT auslesen", page_icon="🚚", layout="wide")
-
-st.title("🚚 CSB Ladeplan TXT auslesen")
-st.caption("TXT hochladen → Touren und Kunden mit CSB-Nummer sauber als Excel oder CSV exportieren.")
-
 uploaded = st.file_uploader("Ladeplan als TXT hochladen", type=["txt"])
 
 if uploaded is None:
-    st.info("Bitte eine TXT-Datei hochladen.")
     st.stop()
 
 try:
-    text = decode_bytes(uploaded.getvalue())
-    kunden_df, touren_df, pruefung_df = parse_ladeplan(text)
+    with st.spinner("Ladeplan wird gelesen..."):
+        text = decode_bytes(uploaded.getvalue())
+        kunden_df, touren_df, pruefung_df = parse_ladeplan(text)
 
     if kunden_df.empty:
         st.error("Es wurden keine Kundenzeilen erkannt.")
@@ -213,16 +220,15 @@ try:
 
     fehler_df = pruefung_df[pruefung_df["Status"] != "OK"]
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     col1.metric("Touren", f"{touren_df['Tour'].nunique():,}".replace(",", "."))
     col2.metric("Kunden", f"{len(kunden_df):,}".replace(",", "."))
     col3.metric("Prüfabweichungen", f"{len(fehler_df):,}".replace(",", "."))
-    col4.metric("Datei", uploaded.name)
 
     if len(fehler_df) == 0:
         st.success("Alle Touren passen zur angegebenen Anzahl Kunden.")
     else:
-        st.warning("Es gibt Touren mit abweichender Kundenanzahl. Bitte im Reiter Prüfung ansehen.")
+        st.warning("Es gibt Touren mit abweichender Kundenanzahl. Bitte Reiter Prüfung ansehen.")
 
     excel_bytes = make_excel(kunden_df, touren_df, pruefung_df)
     csv_bytes = kunden_df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
@@ -254,5 +260,6 @@ try:
     with tab3:
         st.dataframe(pruefung_df, use_container_width=True, hide_index=True)
 
-except Exception as error:
-    st.exception(error)
+except Exception:
+    st.error("Fehler beim Verarbeiten der Datei.")
+    st.code(traceback.format_exc())
